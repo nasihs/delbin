@@ -1,0 +1,115 @@
+// ============================================================
+// Delbin Grammar - Descriptive Language for Binary Object
+// ============================================================
+
+// Whitespace and comments
+WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
+COMMENT    = _{ "//" ~ (!"\n" ~ ANY)* }
+
+// ============================================================
+// Top-level structure
+// ============================================================
+file = { SOI ~ directive* ~ struct_def ~ EOI }
+
+// ============================================================
+// Directives
+// ============================================================
+directive       = { "@" ~ directive_name ~ "=" ~ directive_value ~ ";" }
+directive_name  = { "endian" }
+directive_value = { "little" | "big" }
+
+// ============================================================
+// Struct definition
+// ============================================================
+struct_def  = { "struct" ~ ident ~ struct_attr* ~ "{" ~ field_def* ~ "}" }
+struct_attr = { "@" ~ ( "packed" | align_attr ) }
+align_attr  = { "align" ~ "(" ~ number ~ ")" }
+
+// ============================================================
+// Field definition
+// ============================================================
+field_def = { ident ~ ":" ~ type_spec ~ ( "=" ~ init_expr )? ~ ";" }
+
+// ============================================================
+// Types
+// ============================================================
+type_spec    = { array_type | scalar_type }
+scalar_type  = @{ ( "u" | "i" ) ~ ( "8" | "16" | "32" | "64" ) }
+array_type   = { "[" ~ scalar_type ~ ";" ~ expr ~ "]" }
+
+// ============================================================
+// Initialization expression (field assignment)
+// ============================================================
+init_expr = { expr }
+
+// ============================================================
+// Expressions
+// ============================================================
+expr         = { or_expr }
+or_expr      = { and_expr ~ ( "|" ~ and_expr )* }
+and_expr     = { shift_expr ~ ( "&" ~ shift_expr )* }
+shift_expr   = { add_expr ~ ( shift_op ~ add_expr )* }
+add_expr     = { unary_expr ~ ( add_op ~ unary_expr )* }
+unary_expr   = { unary_op? ~ primary_expr }
+
+shift_op     = { "<<" | ">>" }
+add_op       = { "+" | "-" }
+unary_op     = { "~" }
+
+primary_expr = {
+    builtin_call
+  | env_var
+  | hex_number
+  | bin_number
+  | dec_number
+  | string
+  | "(" ~ expr ~ ")"
+}
+
+// ============================================================
+// Built-in function call
+// ============================================================
+builtin_call = { "@" ~ builtin_name ~ "(" ~ arg_list? ~ ")" }
+builtin_name = @{ "bytes" | "sizeof" | "offsetof" | "crc32" | "sha256" }
+arg_list     = { arg ~ ( "," ~ arg )* }
+
+// arg rule - ordered by priority
+arg = { 
+    range_expr      // @self or @self[..xxx] takes priority
+  | section_ref     // Simple identifier (e.g. image)
+  | expr            // General expression (string, number, environment variable, etc.)
+}
+
+// ============================================================
+// Range expression
+// ============================================================
+range_expr   = { "@self" ~ ( "[" ~ range_spec ~ "]" )? }
+range_spec   = { range_start? ~ ".." ~ range_end? }
+range_start  = { number }
+range_end    = { ident }
+
+// ============================================================
+// Section reference (simple identifier)
+// ============================================================
+section_ref  = @{ ident }
+
+// ============================================================
+// Literals
+// ============================================================
+hex_number   = @{ "0x" ~ ASCII_HEX_DIGIT+ }
+bin_number   = @{ "0b" ~ ( "0" | "1" )+ }
+dec_number   = @{ ASCII_DIGIT+ }
+string       = ${ "\"" ~ string_inner ~ "\"" }
+string_inner = @{ ( !( "\"" | "\\" ) ~ ANY | escape_seq )* }
+escape_seq   = @{ "\\" ~ ( "n" | "r" | "t" | "\\" | "\"" | "0" | ( "x" ~ ASCII_HEX_DIGIT{2} ) ) }
+
+// ============================================================
+// Environment variables
+// ============================================================
+env_var = { "${" ~ ident ~ "}" }
+
+// ============================================================
+// Identifiers
+// ============================================================
+ident  = @{ ( ASCII_ALPHA | "_" ) ~ ( ASCII_ALPHANUMERIC | "_" )* }
+number = @{ ASCII_DIGIT+ }

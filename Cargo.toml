@@ -1,0 +1,17 @@
+[package]
+name = "delbin"
+version = "0.1.0"
+description = "Descriptive Language for Binary Object"
+edition = "2021"
+authors = ["nasihs"]
+license = "MIT"
+
+[dependencies]
+pest = "2.7"
+pest_derive = "2.7"
+crc = "3.2"
+sha2 = "0.10"
+thiserror = "2.0.17"
+
+[dev-dependencies]
+hex = "0.4"
