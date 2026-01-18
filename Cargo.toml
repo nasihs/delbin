@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Descriptive Language for Binary Object"
 edition = "2021"
 authors = ["nasihs"]
-license = "MIT"
+license = "MIT OR Apache-2.0"
 
 [dependencies]
 pest = "2.7"
