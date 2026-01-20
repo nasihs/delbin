@@ -361,6 +361,9 @@ fn parse_unary_expr(pair: pest::iterators::Pair<Rule>) -> Result<Expr> {
 fn parse_primary_expr(pair: pest::iterators::Pair<Rule>) -> Result<Expr> {
     for inner in pair.into_inner() {
         match inner.as_rule() {
+            Rule::array_literal => {
+                return parse_array_literal(inner);
+            }
             Rule::builtin_call => {
                 return parse_builtin_call(inner);
             }
@@ -504,6 +507,113 @@ fn parse_env_var(pair: pest::iterators::Pair<Rule>) -> Result<Expr> {
     Err(DelbinError::new(ErrorCode::E01003, "Invalid environment variable"))
 }
 
+fn parse_array_literal(pair: pest::iterators::Pair<Rule>) -> Result<Expr> {
+    for inner in pair.into_inner() {
+        if inner.as_rule() == Rule::array_content {
+            return parse_array_content(inner);
+        }
+    }
+    Err(DelbinError::new(ErrorCode::E01003, "Invalid array literal"))
+}
+
+fn parse_array_content(pair: pest::iterators::Pair<Rule>) -> Result<Expr> {
+    for inner in pair.into_inner() {
+        match inner.as_rule() {
+            Rule::repeat_form => {
+                return parse_repeat_form(inner);
+            }
+            Rule::list_form => {
+                return parse_list_form(inner);
+            }
+            _ => {}
+        }
+    }
+    Err(DelbinError::new(ErrorCode::E01003, "Invalid array content"))
+}
+
+fn parse_repeat_form(pair: pest::iterators::Pair<Rule>) -> Result<Expr> {
+    let mut value = None;
+    let mut count = None;
+    let mut is_infer = false;
+
+    for inner in pair.into_inner() {
+        match inner.as_rule() {
+            Rule::array_elem => {
+                value = Some(parse_array_elem(inner)?);
+            }
+            Rule::number => {
+                let n = inner.as_str().parse::<u64>().map_err(|_| {
+                    DelbinError::new(ErrorCode::E01004, format!("Invalid number: {}", inner.as_str()))
+                })?;
+                count = Some(Expr::Number(n));
+            }
+            Rule::infer_marker => {
+                is_infer = true;
+            }
+            _ => {}
+        }
+    }
+
+    let value = value.ok_or_else(|| DelbinError::new(ErrorCode::E01003, "Missing array value"))?;
+    
+    let repeat_count = if is_infer {
+        RepeatCount::Infer
+    } else {
+        RepeatCount::Explicit(Box::new(
+            count.ok_or_else(|| DelbinError::new(ErrorCode::E01003, "Missing array count"))?
+        ))
+    };
+
+    Ok(Expr::ArrayLiteral(ArrayLiteralKind::Repeat {
+        value: Box::new(value),
+        count: repeat_count,
+    }))
+}
+
+fn parse_list_form(pair: pest::iterators::Pair<Rule>) -> Result<Expr> {
+    let mut elements = Vec::new();
+
+    for inner in pair.into_inner() {
+        if inner.as_rule() == Rule::array_elem {
+            elements.push(parse_array_elem(inner)?);
+        }
+    }
+
+    Ok(Expr::ArrayLiteral(ArrayLiteralKind::List { elements }))
+}
+
+fn parse_array_elem(pair: pest::iterators::Pair<Rule>) -> Result<Expr> {
+    for inner in pair.into_inner() {
+        match inner.as_rule() {
+            Rule::env_var => {
+                return parse_env_var(inner);
+            }
+            Rule::hex_number => {
+                let s = inner.as_str();
+                let value = u64::from_str_radix(&s[2..], 16).map_err(|_| {
+                    DelbinError::new(ErrorCode::E01004, format!("Invalid hex number: {}", s))
+                })?;
+                return Ok(Expr::Number(value));
+            }
+            Rule::bin_number => {
+                let s = inner.as_str();
+                let value = u64::from_str_radix(&s[2..], 2).map_err(|_| {
+                    DelbinError::new(ErrorCode::E01004, format!("Invalid binary number: {}", s))
+                })?;
+                return Ok(Expr::Number(value));
+            }
+            Rule::dec_number => {
+                let value = inner.as_str().parse::<u64>().map_err(|_| {
+                    DelbinError::new(ErrorCode::E01004, format!("Invalid number: {}", inner.as_str()))
+                })?;
+                return Ok(Expr::Number(value));
+            }
+            _ => {}
+        }
+    }
+    Err(DelbinError::new(ErrorCode::E01004, "Invalid array element"))
+}
+
 /// Handle string escape sequences
 fn unescape_string(s: &str) -> Result<String> {
     let mut result = String::new();
@@ -571,5 +681,60 @@ mod tests {
         assert_eq!(file.struct_def.name, "header");
         assert!(file.struct_def.packed);
         assert_eq!(file.struct_def.fields.len(), 2);
+    }
+
+    #[test]
+    fn test_array_literal_repeat_explicit() {
+        let input = r#"
+            struct test @packed {
+                data: [u8; 4] = [0xFF; 4];
+            }
+        "#;
+        let result = parse(input);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_array_literal_repeat_infer() {
+        let input = r#"
+            struct test @packed {
+                data: [u8; 4] = [0xFF; _];
+            }
+        "#;
+        let result = parse(input);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_array_literal_list() {
+        let input = r#"
+            struct test @packed {
+                data: [u8; 4] = [0x01, 0x02, 0x03, 0x04];
+            }
+        "#;
+        let result = parse(input);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_array_literal_with_env_var() {
+        let input = r#"
+            struct test @packed {
+                data: [u8; 4] = [0x01, ${VAR}, 0x03, 0x04];
+            }
+        "#;
+        let result = parse(input);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_array_literal_repeat_with_env_var() {
+        let input = r#"
+            struct test @packed {
+                data: [u8; 4] = [${VAL}; _];
+            }
+        "#;
+        let result = parse(input);
+        assert!(result.is_ok());
     }
 }

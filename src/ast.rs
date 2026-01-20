@@ -81,6 +81,31 @@ pub enum Expr {
         start: Option<Box<Expr>>,
         end: Option<String>,
     },
+    /// Array literal: [val; N], [val; _], or [a, b, c]
+    ArrayLiteral(ArrayLiteralKind),
+}
+
+/// Array literal kind
+#[derive(Debug, Clone)]
+pub enum ArrayLiteralKind {
+    /// Repeat form: [value; count] or [value; _]
+    Repeat {
+        value: Box<Expr>,
+        count: RepeatCount,
+    },
+    /// List form: [elem1, elem2, ...]
+    List {
+        elements: Vec<Expr>,
+    },
+}
+
+/// Repeat count for array literals
+#[derive(Debug, Clone)]
+pub enum RepeatCount {
+    /// Explicit count: [value; N]
+    Explicit(Box<Expr>),
+    /// Inferred count: [value; _]
+    Infer,
 }
 
 /// Binary operator

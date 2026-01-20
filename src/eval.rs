@@ -199,6 +199,10 @@ impl Evaluator {
                 let len_val = self.eval_expr(len)? as usize;
 
                 match init {
+                    Expr::ArrayLiteral(array_lit) => {
+                        // Handle array literal initialization
+                        self.eval_array_literal(array_lit, *elem, len_val)
+                    }
                     Expr::Call { name, args } if name == "bytes" => {
                         // @bytes("string")
                         if args.len() != 1 {
@@ -225,6 +229,92 @@ impl Evaluator {
                         Ok(vec![0u8; len_val * elem.size()])
                     }
                 }
+            }
+        }
+    }
+
+    /// Evaluate array literal
+    fn eval_array_literal(
+        &mut self,
+        array_lit: &ArrayLiteralKind,
+        elem_type: ScalarType,
+        array_len: usize,
+    ) -> Result<Vec<u8>> {
+        let elem_size = elem_type.size();
+        let total_bytes = array_len * elem_size;
+
+        match array_lit {
+            ArrayLiteralKind::Repeat { value, count } => {
+                // Get the fill value
+                let fill_value = self.eval_expr(value)?;
+
+                // Determine actual count
+                let actual_count = match count {
+                    RepeatCount::Infer => array_len,
+                    RepeatCount::Explicit(count_expr) => {
+                        let count_val = self.eval_expr(count_expr)? as usize;
+                        
+                        if count_val > array_len {
+                            // Truncate if count exceeds array length
+                            self.warnings.push(DelbinWarning {
+                                code: crate::error::WarningCode::W03002,
+                                message: format!(
+                                    "Array literal count {} exceeds type length {}, truncating",
+                                    count_val, array_len
+                                ),
+                                location: None,
+                            });
+                            array_len
+                        } else if count_val < array_len {
+                            // Use specified count, remaining will be filled with zeros
+                            count_val
+                        } else {
+                            // Exact match
+                            count_val
+                        }
+                    }
+                };
+
+                // Generate bytes
+                let mut result = Vec::with_capacity(total_bytes);
+                // Fill with specified value
+                for _ in 0..actual_count {
+                    result.extend_from_slice(&self.scalar_to_bytes(elem_type, fill_value));
+                }
+                // Fill remaining with zeros
+                while result.len() < total_bytes {
+                    result.push(0);
+                }
+                Ok(result)
+            }
+
+            ArrayLiteralKind::List { elements } => {
+                let mut result = Vec::with_capacity(total_bytes);
+
+                // Process provided elements
+                for (idx, elem_expr) in elements.iter().enumerate() {
+                    if idx >= array_len {
+                        self.warnings.push(DelbinWarning {
+                            code: crate::error::WarningCode::W03001,
+                            message: format!(
+                                "Array literal has {} elements but type length is {}, truncating",
+                                elements.len(),
+                                array_len
+                            ),
+                            location: None,
+                        });
+                        break;
+                    }
+                    let value = self.eval_expr(elem_expr)?;
+                    result.extend_from_slice(&self.scalar_to_bytes(elem_type, value));
+                }
+
+                // Fill remaining with zeros
+                while result.len() < total_bytes {
+                    result.push(0);
+                }
+
+                Ok(result)
             }
         }
     }
@@ -290,6 +380,11 @@ impl Evaluator {
             Expr::Range { .. } => Err(DelbinError::new(
                 ErrorCode::E03001,
                 "Range expression cannot be used as numeric value",
+            )),
+
+            Expr::ArrayLiteral(_) => Err(DelbinError::new(
+                ErrorCode::E03001,
+                "Array literal cannot be used as numeric value",
             )),
         }
     }
@@ -569,3 +664,4 @@ impl Evaluator {
         }
     }
 }
+

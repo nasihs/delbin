@@ -18,6 +18,7 @@ Delbin enables firmware engineers to:
 - ✅ Support CRC32 and SHA256 checksums
 - ✅ Handle self-referencing fields (e.g., header CRC)
 - ✅ Support both little-endian and big-endian byte orders
+- ✅ Flexible array initialization with multiple syntax forms
 
 ## Quick Start
 
@@ -80,6 +81,23 @@ struct header @packed {
 
 - **Scalar types**: `u8`, `u16`, `u32`, `u64`, `i8`, `i16`, `i32`, `i64`
 - **Array types**: `[u8; 4]`, `[u32; N]`
+
+### Array Initialization
+
+Arrays support flexible initialization syntax:
+
+```rust
+data: [u8; 4];                    // Default: all zeros
+pattern: [u8; 8] = [0xFF; 8];     // Repeat value (explicit count)
+fill: [u8; 8] = [0xAA; _];        // Repeat value (inferred count)
+values: [u8; 4] = [1, 2, 3, 4];   // Element list (full)
+partial: [u8; 8] = [1, 2];        // Element list (partial, pad with 0)
+magic: [u8; 4] = @bytes("FPK");   // Function call
+
+// Environment variables in arrays
+data: [u8; 4] = [${VAL}; _];      // Repeat with env var
+mixed: [u8; 4] = [1, ${X}, 3, 4]; // Element list with env var
+```
 
 ### Expressions
 
@@ -153,6 +171,8 @@ struct header @packed {
 - [x] Range expressions
 - [x] Little-endian and big-endian support
 - [x] Struct attributes (`@packed`)
+- [x] Array literal initialization with multiple syntax forms
+- [x] Environment variables in array elements
 - [x] Error reporting with error codes
 - [x] Warning system
 

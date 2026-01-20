@@ -9,21 +9,16 @@ fn main() {
 
         struct header @packed {
             magic:          [u8; 4] = @bytes("fpk\0");
-            image_type:     u32 = 0;
-            header_ver:     u16 = 0x0100;
-            header_size:    u16 = @sizeof(@self);
-            fw_version:     u32 = (${VERSION_MAJOR} << 24) | (${VERSION_MINOR} << 16) | ${VERSION_PATCH};
-            build_number:   u32 = ${BUILD_NUMBER};
-            version_str:    [u8; 16] = @bytes(${VERSION_STRING});
-            flags:          u32 = 0;
+            config:     	u32 = 0;
+            old_versino:	[u8; 16];
+            new_version:    [u8; 16] = [1, 2, 3];
+            watermark:      [u8; 16] = @bytes("DELBIN_DEMO");
+            partition:		[u8; 16] = @bytes("app");
             img_size:       u32 = @sizeof(image);
             packed_size:    u32 = @sizeof(image);
             timestamp:      u32 = ${UNIX_STAMP};
-            partition:      [u8; 16] = @bytes("app");
-            watermark:      [u8; 16] = @bytes("DELBIN_DEMO");
-            reserved:       [u8; 32];
             img_crc32:      u32 = @crc32(image);
-            img_sha256:     [u8; 32] = @sha256(image);
+            packed_crc32:   u32 = 0;
             header_crc32:   u32 = @crc32(@self[..header_crc32]);
             _padding:       [u8; 256 - @offsetof(_padding)];
         }

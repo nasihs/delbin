@@ -90,13 +90,59 @@ dynamic: [u8; 128 - @offsetof(_pad)];  // Computed length
 
 ### Array Initialization
 
-| Syntax | Description |
-|--------|-------------|
-| `[u8; N]` | Default fill with 0x00 |
-| `[u8; N] = [val; N]` | Fill with specific value (full form) |
-| `[u8; N] = [val; _]` | Fill with specific value (inferred size) |
-| `[u8; N] = [a, b, c]` | Element-by-element, pad with 0x00 |
-| `[u8; N] = @bytes("str")` | Function return value |
+Arrays support five initialization syntax forms:
+
+| Syntax | Description | Behavior |
+|--------|-------------|----------|
+| `[u8; N]` | Default initialization | Fills all elements with `0x00` |
+| `[u8; N] = [val; N]` | Repeat value (explicit count) | Fills N elements with `val` |
+| `[u8; N] = [val; _]` | Repeat value (inferred count) | Fills all elements with `val` (count inferred from type) |
+| `[u8; N] = [a, b, c]` | Element list | Uses specified values, pads remaining with `0x00` |
+| `[u8; N] = @bytes("str")` | Function call | Uses function return value |
+
+#### Detailed Behavior
+
+**Repeat Form: `[val; count]`**
+- If `count < N`: fills `count` elements with `val`, pads remaining with `0x00`
+- If `count == N`: fills all elements with `val`
+- If `count > N`: fills `N` elements (truncates), emits warning W03002
+- `count` can be `_` to infer from array type length
+
+**Element List Form: `[a, b, c, ...]`**
+- If fewer elements than N: pads remaining with `0x00`
+- If more elements than N: truncates and emits warning W03002
+- Elements can be literals or environment variables: `[1, ${VAR}, 3]`
+
+#### Examples
+
+```rust
+// Default initialization
+zeros: [u8; 4];                      // [0x00, 0x00, 0x00, 0x00]
+
+// Repeat with explicit count
+pattern1: [u8; 4] = [0xFF; 4];       // [0xFF, 0xFF, 0xFF, 0xFF]
+pattern2: [u8; 4] = [0xFF; 2];       // [0xFF, 0xFF, 0x00, 0x00] - partial fill
+
+// Repeat with inferred count
+fill: [u8; 4] = [0xAA; _];           // [0xAA, 0xAA, 0xAA, 0xAA]
+
+// Element list (full)
+values: [u8; 4] = [1, 2, 3, 4];      // [0x01, 0x02, 0x03, 0x04]
+
+// Element list (partial)
+partial: [u8; 8] = [0x11, 0x22];     // [0x11, 0x22, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+
+// With environment variables
+env_repeat: [u8; 4] = [${VAL}; _];   // Repeat env var value
+env_list: [u8; 4] = [1, ${X}, 3, 4]; // Mix literals and env vars
+
+// Multi-byte types
+u16_data: [u16; 4] = [0x1234; _];    // Four u16 values (respects endianness)
+u32_vals: [u32; 2] = [0xDEAD, 0xBEEF]; // Two u32 values
+
+// Function calls
+magic: [u8; 8] = @bytes("DELBIN");   // "DELBIN" + 0x00 padding
+```
 
 ## Expressions
 

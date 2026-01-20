@@ -57,7 +57,8 @@ add_op       = { "+" | "-" }
 unary_op     = { "~" }
 
 primary_expr = {
-    builtin_call
+    array_literal
+  | builtin_call
   | env_var
   | hex_number
   | bin_number
@@ -92,6 +93,16 @@ range_end    = { ident }
 // Section reference (simple identifier)
 // ============================================================
 section_ref  = @{ ident }
+
+// ============================================================
+// Array literal
+// ============================================================
+array_literal = { "[" ~ array_content ~ "]" }
+array_content = { repeat_form | list_form }
+repeat_form   = { array_elem ~ ";" ~ (number | infer_marker) }
+list_form     = { array_elem ~ ("," ~ array_elem)* }
+array_elem    = { env_var | hex_number | bin_number | dec_number }
+infer_marker  = { "_" }
 
 // ============================================================
 // Literals
