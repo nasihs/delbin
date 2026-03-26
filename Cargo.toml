@@ -11,6 +11,8 @@ pest = "2.7"
 pest_derive = "2.7"
 crc = "3.2"
 sha2 = "0.10"
+sha1 = "0.10"
+md-5 = "0.10"
 thiserror = "2.0.17"
 
 [dev-dependencies]

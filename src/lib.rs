@@ -272,6 +272,65 @@ mod tests {
     }
 
     #[test]
+    fn test_generate_with_crc16() {
+        let dsl = r#"
+            @endian = little;
+            struct header @packed {
+                crc: u16 = @crc16(image);
+            }
+        "#;
+
+        let env = HashMap::new();
+        let mut sections = HashMap::new();
+        sections.insert("image".to_string(), b"hello world".to_vec());
+
+        let result = generate(dsl, &env, &sections).unwrap();
+        assert_eq!(result.data.len(), 2);
+        // CRC16-CCITT of "hello world" = 61419 = 0xEFEB (little-endian: 0xEB, 0xEF)
+        assert_eq!(result.data, vec![0xEB, 0xEF]);
+    }
+
+    #[test]
+    fn test_generate_with_crc_generic() {
+        let dsl = r#"
+            @endian = little;
+            struct header @packed {
+                crc32: u32 = @crc("crc32", image);
+                crc16: u16 = @crc("crc16-modbus", image);
+            }
+        "#;
+
+        let env = HashMap::new();
+        let mut sections = HashMap::new();
+        sections.insert("image".to_string(), b"hello world".to_vec());
+
+        let result = generate(dsl, &env, &sections).unwrap();
+        // crc32 (4 bytes) + crc16 (2 bytes) = 6 bytes
+        assert_eq!(result.data.len(), 6);
+        // Verify crc32 of "hello world" = 0x0D4A1185
+        assert_eq!(&result.data[0..4], &[0x85, 0x11, 0x4A, 0x0D]);
+    }
+
+    #[test]
+    fn test_generate_with_hash_generic() {
+        let dsl = r#"
+            @endian = little;
+            struct header @packed {
+                sha256: [u8; 32] = @hash("sha256", image);
+                md5:    [u8; 16] = @hash("md5", image);
+            }
+        "#;
+
+        let env = HashMap::new();
+        let mut sections = HashMap::new();
+        sections.insert("image".to_string(), b"hello world".to_vec());
+
+        let result = generate(dsl, &env, &sections).unwrap();
+        // sha256 (32 bytes) + md5 (16 bytes) = 48 bytes
+        assert_eq!(result.data.len(), 48);
+    }
+
+    #[test]
     fn test_generate_full_header() {
         let dsl = r#"
             @endian = little;
