@@ -15,7 +15,7 @@ Delbin enables firmware engineers to:
 - ✅ Automatically calculate sizes, offsets, and checksums
 - ✅ Support environment variable substitution
 - ✅ Generate binary data from DSL definitions
-- ✅ Support CRC32 and SHA256 checksums
+- ✅ Support CRC32, CRC16, and SHA256 checksums
 - ✅ Handle self-referencing fields (e.g., header CRC)
 - ✅ Support both little-endian and big-endian byte orders
 - ✅ Flexible array initialization with multiple syntax forms
@@ -113,7 +113,10 @@ mixed: [u8; 4] = [1, ${X}, 3, 4]; // Element list with env var
 | `@sizeof(section)` | Get size of section or struct | `@sizeof(image)` |
 | `@offsetof(field)` | Get field offset | `@offsetof(crc)` |
 | `@crc32(range)` | Calculate CRC32 checksum | `@crc32(image)` |
+| `@crc16(range)` | Calculate CRC16-CCITT checksum | `@crc16(image)` |
+| `@crc(algo, range)` | Calculate CRC with specified algorithm | `@crc("crc16-modbus", image)` |
 | `@sha256(range)` | Calculate SHA256 hash | `@sha256(image)` |
+| `@hash(algo, range)` | Calculate hash with specified algorithm | `@hash("md5", image)` |
 
 ### Range Expressions
 
@@ -166,7 +169,7 @@ struct header @packed {
 - [x] AST generation
 - [x] Binary data generation
 - [x] Environment variable substitution
-- [x] Built-in functions: `@bytes`, `@sizeof`, `@offsetof`, `@crc32`, `@sha256`
+- [x] Built-in functions: `@bytes`, `@sizeof`, `@offsetof`, `@crc32`, `@crc16`, `@crc`, `@sha256`, `@hash`
 - [x] Self-referencing fields support
 - [x] Range expressions
 - [x] Little-endian and big-endian support
@@ -181,8 +184,8 @@ struct header @packed {
 - [ ] Data parsing (read binary according to DSL schema)
 - [ ] Data validation (verify binary data integrity)
 - [ ] `@align(n)` attribute support
-- [ ] Additional CRC algorithms (`@crc16`, `@crc()` with algorithm parameter)
-- [ ] Additional hash algorithms (`@hash()` with algorithm parameter)
+- [x] Additional CRC algorithms (`@crc16`, `@crc()` with algorithm parameter)
+- [x] Additional hash algorithms (`@hash()` with algorithm parameter)
 - [ ] File merge API
 - [ ] TOML configuration file support
 - [ ] CLI tool

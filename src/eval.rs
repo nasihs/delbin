@@ -173,7 +173,7 @@ impl Evaluator {
     fn is_self_referencing(&self, expr: &Expr, field_name: &str) -> bool {
         match expr {
             Expr::Call { name, args } => {
-                if name == "crc32" || name == "sha256" {
+                if matches!(name.as_str(), "crc32" | "crc16" | "crc" | "sha256" | "hash") {
                     for arg in args {
                         if let Expr::Range { end: Some(end), .. } = arg {
                             if end == field_name {
@@ -219,10 +219,22 @@ impl Evaluator {
                         Ok(bytes)
                     }
                     Expr::Call { name, args } if name == "sha256" => {
-                        // @sha256(section)
+                        // @sha256(range)
                         let data = self.collect_range_data(args)?;
                         let hash = builtin::sha256(&data);
                         Ok(hash.to_vec())
+                    }
+                    Expr::Call { name, args } if name == "hash" => {
+                        // @hash("algorithm", range)
+                        if args.len() < 2 {
+                            return Err(DelbinError::new(
+                                ErrorCode::E04004,
+                                "@hash() requires at least 2 arguments",
+                            ));
+                        }
+                        let algorithm = self.eval_string(&args[0])?;
+                        let data = self.collect_range_data(&args[1..])?;
+                        builtin::hash_generic(&algorithm, &data)
                     }
                     _ => {
                         // Default zero fill
@@ -475,11 +487,36 @@ impl Evaluator {
                 Ok(builtin::crc32(&data) as u64)
             }
 
+            "crc16" => {
+                let data = self.collect_range_data(args)?;
+                Ok(builtin::crc16(&data) as u64)
+            }
+
+            "crc" => {
+                if args.len() < 2 {
+                    return Err(DelbinError::new(
+                        ErrorCode::E04004,
+                        "@crc() requires at least 2 arguments",
+                    ));
+                }
+                let algorithm = self.eval_string(&args[0])?;
+                let data = self.collect_range_data(&args[1..])?;
+                builtin::crc_generic(&algorithm, &data)
+            }
+
             "sha256" => {
                 // sha256 returns byte array, not a number
                 Err(DelbinError::new(
                     ErrorCode::E03001,
                     "@sha256() returns bytes, not a number",
+                ))
+            }
+
+            "hash" => {
+                // hash returns byte array, not a number
+                Err(DelbinError::new(
+                    ErrorCode::E03001,
+                    "@hash() returns bytes, not a number",
                 ))
             }
 
@@ -618,6 +655,21 @@ impl Evaluator {
                         let data = self.collect_range_data(args)?;
                         builtin::crc32(&data) as u64
                     }
+                    Expr::Call { name, args } if name == "crc16" => {
+                        let data = self.collect_range_data(args)?;
+                        builtin::crc16(&data) as u64
+                    }
+                    Expr::Call { name, args } if name == "crc" => {
+                        if args.len() < 2 {
+                            return Err(DelbinError::new(
+                                ErrorCode::E04004,
+                                "@crc() requires at least 2 arguments",
+                            ));
+                        }
+                        let algorithm = self.eval_string(&args[0])?;
+                        let data = self.collect_range_data(&args[1..])?;
+                        builtin::crc_generic(&algorithm, &data)?
+                    }
                     _ => self.eval_expr(&pending.expr)?,
                 };
                 Ok(self.scalar_to_bytes(*scalar, value))
@@ -629,6 +681,17 @@ impl Evaluator {
                         let data = self.collect_range_data(args)?;
                         let hash = builtin::sha256(&data);
                         Ok(hash.to_vec())
+                    }
+                    Expr::Call { name, args } if name == "hash" => {
+                        if args.len() < 2 {
+                            return Err(DelbinError::new(
+                                ErrorCode::E04004,
+                                "@hash() requires at least 2 arguments",
+                            ));
+                        }
+                        let algorithm = self.eval_string(&args[0])?;
+                        let data = self.collect_range_data(&args[1..])?;
+                        builtin::hash_generic(&algorithm, &data)
                     }
                     _ => Ok(vec![0u8; len_val * elem.size()]),
                 }

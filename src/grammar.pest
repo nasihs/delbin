@@ -71,7 +71,7 @@ primary_expr = {
 // Built-in function call
 // ============================================================
 builtin_call = { "@" ~ builtin_name ~ "(" ~ arg_list? ~ ")" }
-builtin_name = @{ "bytes" | "sizeof" | "offsetof" | "crc32" | "sha256" }
+builtin_name = @{ "bytes" | "sizeof" | "offsetof" | "crc32" | "crc16" | "crc" | "sha256" | "hash" }
 arg_list     = { arg ~ ( "," ~ arg )* }
 
 // arg rule - ordered by priority
