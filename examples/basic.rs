@@ -11,7 +11,7 @@ fn main() {
             magic:          [u8; 4] = @bytes("fpk\0");
             config:     	u32 = 0;
             old_versino:	[u8; 16];
-            new_version:    [u8; 16] = [1, 2, 3];
+            new_version:    [u8; 16] = [${VERSION_MAJOR}, ${VERSION_MINOR}, ${VERSION_PATCH}];
             watermark:      [u8; 16] = @bytes("DELBIN_DEMO");
             partition:		[u8; 16] = @bytes("app");
             img_size:       u32 = @sizeof(image);
@@ -32,7 +32,7 @@ fn main() {
     env.insert("BUILD_NUMBER".to_string(), Value::U64(100));
     env.insert(
         "VERSION_STRING".to_string(),
-        Value::String("1.2.3-build100".to_string()),
+        Value::String("1.2.3-beta.4".to_string()),
     );
     env.insert("UNIX_STAMP".to_string(), Value::U64(1705574400));
 
