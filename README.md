@@ -1,6 +1,4 @@
-# Delbin
-
-**Descriptive Language for Binary Object**
+# Delbin - Descriptive Language for Binary Objects
 
 A Domain-Specific Language (DSL) and its supporting library for describing and generating binary data structures, primarily designed for embedded firmware header generation.
 
@@ -15,10 +13,16 @@ Delbin enables firmware engineers to:
 - ✅ Automatically calculate sizes, offsets, and checksums
 - ✅ Support environment variable substitution
 - ✅ Generate binary data from DSL definitions
-- ✅ Support CRC32 and SHA256 checksums
+- ✅ CRC32, CRC16-MODBUS, and SHA256 checksums — unified `@crc("algo", ...)` API
 - ✅ Handle self-referencing fields (e.g., header CRC)
+- ✅ Full range expressions: `@self`, `@self[..field]`, `@self[field..]`, `@self[field_a..field_b]`
 - ✅ Support both little-endian and big-endian byte orders
 - ✅ Flexible array initialization with multiple syntax forms
+- ✅ Struct alignment padding via `@align(n)`
+- ✅ Type safety: hard errors for type mismatches, warnings for value truncation
+- ✅ `validate()` API — check DSL without generating bytes
+- ✅ `parse()` API — reverse-read binary data according to DSL schema
+- ✅ Command-line tool with `--env`, `--section`, `--format`, `--output`, `--verbose`
 
 ## Quick Start
 
@@ -77,6 +81,21 @@ struct header @packed {
 }
 ```
 
+Struct attributes:
+
+| Attribute | Description |
+|-----------|-------------|
+| `@packed` | No alignment padding between fields |
+| `@align(n)` | Pad struct output to next `n`-byte boundary |
+
+```rust
+struct header @align(4) {   // output always a multiple of 4 bytes
+    tag:  u8  = 0xAB;
+    val:  u16 = 0x1234;
+    // auto-padded to 4 bytes
+}
+```
+
 ### Types
 
 - **Scalar types**: `u8`, `u16`, `u32`, `u64`, `i8`, `i16`, `i32`, `i64`
@@ -111,19 +130,28 @@ mixed: [u8; 4] = [1, ${X}, 3, 4]; // Element list with env var
 |----------|-------------|---------|
 | `@bytes(str)` | Convert string to byte array | `@bytes("FPK\0")` |
 | `@sizeof(section)` | Get size of section or struct | `@sizeof(image)` |
-| `@offsetof(field)` | Get field offset | `@offsetof(crc)` |
-| `@crc32(range)` | Calculate CRC32 checksum | `@crc32(image)` |
-| `@sha256(range)` | Calculate SHA256 hash | `@sha256(image)` |
+| `@offsetof(field)` | Get field byte offset | `@offsetof(crc)` |
+| `@crc32(range)` | CRC32-ISO-HDLC (alias for `@crc("crc32", ...)`) | `@crc32(image)` |
+| `@crc("algo", range)` | CRC with named algorithm | `@crc("crc16-modbus", image)` |
+| `@sha256(range)` | SHA256 hash (returns `[u8; 32]`) | `@sha256(image)` |
+
+**Supported CRC algorithms** for `@crc()`:
+
+| Name | Width | Description |
+|------|-------|-------------|
+| `"crc32"` / `"crc32-iso-hdlc"` | 32-bit | Same as `@crc32()` |
+| `"crc16-modbus"` | 16-bit | CRC16-MODBUS |
 
 ### Range Expressions
 
 ```rust
-@self              // Entire current struct
-@self[..field]     // From start to field
-@self[field..]     // From field to end
+@self                       // Entire current struct
+@self[..field]              // From start to before field
+@self[field..]              // From field to end of struct
+@self[field_a..field_b]     // From field_a to before field_b
+@self[0x10..field]          // From byte offset 0x10 to before field
+section_name                // Entire external section (e.g. image)
 ```
-
-For complete syntax documentation, see [GRAMMAR.md](GRAMMAR.md).
 
 ## Example: Firmware Header
 
@@ -150,6 +178,9 @@ struct header @packed {
     img_crc32:      u32 = @crc32(image);
     img_sha256:     [u8; 32] = @sha256(image);
     
+    // Self-referencing: CRC of body from magic to body_crc (partial range)
+    body_crc:       u32 = @crc("crc16-modbus", @self[magic..body_crc]);
+    
     // Self-referencing header CRC
     header_crc32:   u32 = @crc32(@self[..header_crc32]);
     
@@ -167,25 +198,28 @@ struct header @packed {
 - [x] Binary data generation
 - [x] Environment variable substitution
 - [x] Built-in functions: `@bytes`, `@sizeof`, `@offsetof`, `@crc32`, `@sha256`
-- [x] Self-referencing fields support
-- [x] Range expressions
+- [x] `@crc("algorithm", range)` unified CRC with `crc32` and `crc16-modbus`
+- [x] Self-referencing fields with two-phase evaluation
+- [x] Full range expressions: `@self`, `@self[..field]`, `@self[field..]`, `@self[field_a..field_b]`
 - [x] Little-endian and big-endian support
-- [x] Struct attributes (`@packed`)
-- [x] Array literal initialization with multiple syntax forms
+- [x] Struct attributes: `@packed`, `@align(n)`
+- [x] Array literal initialization with five syntax forms
 - [x] Environment variables in array elements
-- [x] Error reporting with error codes
-- [x] Warning system
+- [x] Type checking: hard error for string→array without `@bytes`, for `@bytes` on non-`u8` arrays
+- [x] Value truncation warning (W03002) when value overflows target field width
+- [x] Shift overflow warning (W04001) for shift amount ≥ 64
+- [x] Structured error and warning codes (E01xxx–E05xxx, W03xxx–W04xxx)
+- [x] `validate()` API — parse + semantic check without generating bytes
+- [x] `parse()` API — reverse-read binary into named fields
+- [x] `merge()` API — generate header and prepend to image in one call
+- [x] CLI tool (`delbin`) with `--env`, `--section`, `--format`, `--output`, `--verbose`
 
 ### 🚧 Planned Features
 
-- [ ] Data parsing (read binary according to DSL schema)
-- [ ] Data validation (verify binary data integrity)
-- [ ] `@align(n)` attribute support
-- [ ] Additional CRC algorithms (`@crc16`, `@crc()` with algorithm parameter)
+- [ ] Multiple structs per DSL file
+- [ ] Additional CRC algorithms (currently: `crc32`, `crc16-modbus`)
 - [ ] Additional hash algorithms (`@hash()` with algorithm parameter)
-- [ ] File merge API
-- [ ] TOML configuration file support
-- [ ] CLI tool
+- [ ] TOML configuration file support for CLI
 
 ### ❌ Not Planned
 
@@ -199,23 +233,40 @@ struct header @packed {
 ### Core Functions
 
 ```rust
+/// Generate binary output from DSL
 pub fn generate(
     dsl: &str,
     env: &HashMap<String, Value>,
     sections: &HashMap<String, Vec<u8>>,
 ) -> Result<GenerateResult>;
 
+/// Generate and return as uppercase hex string
 pub fn generate_hex(
     dsl: &str,
     env: &HashMap<String, Value>,
     sections: &HashMap<String, Vec<u8>>,
 ) -> Result<String>;
 
+/// Generate header and prepend to image_data
 pub fn merge(
     dsl: &str,
     env: &HashMap<String, Value>,
     image_data: &[u8],
 ) -> Result<GenerateResult>;
+
+/// Validate DSL syntax and semantics without generating output.
+/// Returns any warnings on success.
+pub fn validate(
+    dsl: &str,
+    env: &HashMap<String, Value>,
+) -> Result<Vec<DelbinWarning>>;
+
+/// Parse raw bytes back into named field values according to the DSL layout.
+pub fn parse(
+    dsl: &str,
+    env: &HashMap<String, Value>,
+    data: &[u8],
+) -> Result<HashMap<String, Value>>;
 ```
 
 ### Types
@@ -230,41 +281,94 @@ pub enum Value {
 
 pub struct GenerateResult {
     pub data: Vec<u8>,
-    pub warnings: Vec<DelBinWarning>,
+    pub warnings: Vec<DelbinWarning>,
 }
+```
+
+## CLI
+
+```
+delbin [OPTIONS] <INPUT>
+
+Arguments:
+  <INPUT>         DSL file path; use '-' to read from stdin
+
+Options:
+  -o, --output <FILE>        Write to file instead of stdout
+      --format <hex|bin>     Output format: 'hex' (default) or 'bin' (raw bytes)
+      --env <KEY=VALUE>      Set environment variable (repeatable)
+      --section <NAME=FILE>  Load section data from file (repeatable)
+      --verbose              Print warnings to stderr
+  -h, --help
+  -V, --version
+```
+
+**CLI examples:**
+
+```bash
+# Print hex to stdout
+delbin header.dsl
+
+# Write binary file
+delbin header.dsl --format bin -o header.bin
+
+# Inject environment variables
+delbin header.dsl --env VERSION=256 --env BUILD_ID=42
+
+# Pass external section (for @sizeof / @crc32)
+delbin header.dsl --section image=firmware.bin --format bin -o header.bin
+
+# Read DSL from stdin (useful in CI pipelines)
+cat header.dsl | delbin - --env VERSION=1
+
+# Print truncation / overflow warnings
+delbin header.dsl --verbose
 ```
 
 ## Error Handling
 
-Delbin uses structured error codes following IEEE 29148 standard:
+Delbin uses structured error and warning codes:
 
 | Category | Code Range | Description |
 |----------|------------|-------------|
 | Parse errors | E01xxx | DSL syntax errors |
-| Semantic errors | E02xxx | Undefined variables/fields |
-| Type errors | E03xxx | Type mismatches |
+| Semantic errors | E02xxx | Undefined variables/fields/sections |
+| Type errors | E03xxx | Type mismatches, size mismatches |
 | Evaluation errors | E04xxx | Expression evaluation failures |
 | IO errors | E05xxx | File operation errors |
+| String warnings | W03001 | String truncated to fit array |
+| Truncation warnings | W03002 | Integer value truncated to fit field width |
+| Shift warnings | W04001 | Shift amount ≥ 64 bits (result is 0) |
 
 Example:
 ```rust
 match generate(dsl, &env, &sections) {
-    Ok(result) => { /* use result */ },
+    Ok(result) => {
+        for w in &result.warnings {
+            eprintln!("[{:?}] {}", w.code, w.message);
+        }
+    },
     Err(e) => eprintln!("[{}] {}", e.code, e.message),
 }
 ```
 
 ## Examples
 
-Run the basic example:
-
 ```bash
+# Firmware header with CRC and SHA256
 cargo run --example basic
+
+# All array initialization syntax forms
+cargo run --example array_syntax
+
+# Unified @crc() and CRC16-MODBUS
+cargo run --example crc_algorithms
+
+# validate() and parse() APIs
+cargo run --example validate_and_parse
 ```
 
 ## Testing
-
-Run all tests:
 
 ```bash
 cargo test
@@ -292,3 +396,4 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 - [Pest Parser](https://pest.rs) - PEG parser used for DSL parsing
 - [MCUboot](https://docs.mcuboot.com) - Inspiration for firmware header formats
 - [CRC RevEng Catalogue](https://reveng.sourceforge.io/crc-catalogue) - CRC algorithm reference
+

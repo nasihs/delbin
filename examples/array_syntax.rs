@@ -1,6 +1,6 @@
 //! Comprehensive array initialization syntax examples
 
-use delbin::{generate, hex_dump, Value};
+use delbin::{generate, hex_dump};
 use std::collections::HashMap;
 
 fn main() {

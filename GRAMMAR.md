@@ -55,7 +55,17 @@ struct <name> <attributes> {
 | Attribute | Syntax | Description |
 |-----------|--------|-------------|
 | `@packed` | `struct header @packed { ... }` | Compact layout, no padding between fields |
-| `@align(n)` | `struct header @align(4) { ... }` | Align struct to n bytes (⚠️ Not yet implemented) |
+| `@align(n)` | `struct header @align(4) { ... }` | Pad struct output to next `n`-byte boundary |
+
+`@align(n)` rounds the total struct size up to the nearest multiple of `n`. Fields keep their natural layout; padding bytes (0x00) are appended at the end.
+
+```rust
+struct config @align(4) {
+    tag:  u8  = 0xAB;   // offset 0, 1 byte
+    val:  u16 = 0x1234; // offset 1, 2 bytes
+    // raw = 3 bytes → padded to 4 bytes, one 0x00 appended
+}
+```
 
 ## Types
 
@@ -285,28 +295,59 @@ _pad: [u8; 128 - @offsetof(_pad)];           // Self-reference for padding
 
 ### @crc32()
 
-Calculate CRC32 checksum (ISO-HDLC algorithm).
+Calculate CRC32 checksum (ISO-HDLC algorithm). Equivalent to `@crc("crc32", ...)`.
 
 ```rust
 @crc32(<range>)
 ```
 
 **Algorithm:** CRC32-ISO-HDLC
-- Polynomial: `0x04C11DB7`
-- Initial: `0xFFFFFFFF`
-- XOR out: `0xFFFFFFFF`
-- Reflect in/out: `true`
+- Polynomial: `0x04C11DB7` (reflected)
+- Initial value / XOR out: `0xFFFFFFFF`
 
-**Parameters:**
-- `range`: Section reference or range expression
-
-**Returns:** `u32` CRC value
+**Returns:** `u32`
 
 **Examples:**
 ```rust
-img_crc: u32 = @crc32(image);                // CRC of image section
-header_crc: u32 = @crc32(@self[..header_crc]); // Self-referencing CRC
+img_crc: u32 = @crc32(image);                    // CRC of image section
+header_crc: u32 = @crc32(@self[..header_crc]);    // Self-referencing CRC
+partial: u32 = @crc32(@self[magic..partial]);      // Partial struct range
 ```
+
+### @crc()
+
+Calculate CRC using a named algorithm.
+
+```rust
+@crc(<"algorithm">, <range>)
+```
+
+**Parameters:**
+- `"algorithm"`: String literal naming the algorithm (see table below)
+- `range`: Section reference or range expression
+
+**Returns:** integer width matches algorithm (e.g., `u32` for crc32, `u16` for crc16-modbus)
+
+**Supported algorithms:**
+
+| Algorithm name | Width | Description |
+|----------------|-------|-------------|
+| `"crc32"` / `"crc32-iso-hdlc"` | 32-bit | CRC32-ISO-HDLC (same as `@crc32()`) |
+| `"crc16-modbus"` | 16-bit | CRC16-MODBUS |
+
+**Examples:**
+```rust
+// Same output as @crc32()
+img_crc: u32 = @crc("crc32", image);
+
+// CRC16-MODBUS over entire image
+crc16:   u16 = @crc("crc16-modbus", image);
+
+// Self-referencing partial range
+body_crc: u32 = @crc("crc32", @self[magic..body_crc]);
+```
+
+**Error:** Unknown algorithm name returns `E04003 InvalidArgument`.
 
 ### @sha256()
 
@@ -335,11 +376,14 @@ Range expressions specify data ranges for checksum/hash calculations.
 
 | Syntax | Description |
 |--------|-------------|
-| `<section>` | Entire section (e.g., `image`) |
+| `<section>` | Entire named section (e.g., `image`) |
 | `@self` | Entire current struct |
-| `@self[<start>..<end>]` | Byte slice of current struct |
-| `@self[..<field>]` | From start to before field |
-| `@self[<field>..]` | From field to end (⚠️ Not yet implemented) |
+| `@self[..<field>]` | From struct start to before `field` |
+| `@self[<field>..]` | From `field` to end of struct |
+| `@self[<field_a>..<field_b>]` | From `field_a` to before `field_b` |
+| `@self[<offset>..<field>]` | From numeric byte offset to before `field` |
+
+`start` (if given) is the **inclusive** first byte; `end` (if given) is the **exclusive** last byte (i.e., the field at `end` is not included).
 
 ### Examples
 
@@ -347,27 +391,34 @@ Range expressions specify data ranges for checksum/hash calculations.
 // CRC of entire image section
 img_crc: u32 = @crc32(image);
 
-// CRC from start to before header_crc field (self-referencing)
+// CRC from start to before header_crc (self-referencing)
 header_crc: u32 = @crc32(@self[..header_crc]);
 
-// Hash of combined sections (⚠️ Not yet implemented)
-combined_hash: [u8; 32] = @sha256(header, image);
+// CRC from the 'magic' field to end of struct
+tail_crc: u32 = @crc32(@self[magic..]);
+
+// CRC of fields between 'magic' and 'body_crc' (body_crc not included)
+body_crc: u32 = @crc32(@self[magic..body_crc]);
+
+// CRC from byte 0x10 to before 'header_crc'
+partial_crc: u32 = @crc32(@self[0x10..header_crc]);
 ```
 
-### Self-Referencing CRC
+### Self-Referencing Fields (Two-Phase Evaluation)
 
-When a CRC field calculates the checksum of data including positions before itself:
+When a field computes a checksum over a range that includes bytes written before it (or the struct end), Delbin uses two-phase evaluation:
 
-**Two-phase evaluation:**
-1. First pass: Calculate all non-self-referencing fields, fill CRC field with 0
-2. Second pass: Calculate CRC over the specified range, backfill CRC field
+1. **First pass:** write all non-self-referencing fields normally; fill self-referencing fields with `0x00`
+2. **Second pass:** recompute the checksum once all bytes are known; backfill the placeholder
+
+A field is deferred when it calls `@crc32`, `@sha256`, or `@crc` with an `@self` range argument.
 
 **Example:**
 ```rust
 struct header @packed {
     magic: [u8; 4] = @bytes("TEST");
     size: u32 = @sizeof(@self);
-    // This CRC covers all fields from start up to (but not including) itself
+    // Deferred: covers all bytes [0 .. offset_of(header_crc)]
     header_crc: u32 = @crc32(@self[..header_crc]);
 }
 ```
@@ -387,10 +438,10 @@ directive_value = "little" | "big" ;
 
 (* Struct definition *)
 struct_def      = "struct" , identifier , { struct_attr } , "{" , { field_def } , "}" ;
-struct_attr     = "@packed" | ( "@align" , "(" , number , ")" ) ;
+struct_attr     = "@packed" | ( "@align" , "(" , dec_number , ")" ) ;
 
-(* Field definition *)
-field_def       = identifier , ":" , type_spec , [ "=" , expression ] , ";" ;
+(* Field definition — initializer is either an array literal or a general expression *)
+field_def       = identifier , ":" , type_spec , [ "=" , ( array_literal | expression ) ] , ";" ;
 
 (* Types *)
 type_spec       = scalar_type | array_type ;
@@ -404,13 +455,20 @@ and_expr        = shift_expr , { "&" , shift_expr } ;
 shift_expr      = add_expr , { ( "<<" | ">>" ) , add_expr } ;
 add_expr        = unary_expr , { ( "+" | "-" ) , unary_expr } ;
 unary_expr      = [ "~" ] , primary_expr ;
-primary_expr    = number | string | env_var | builtin_call | "(" , expression , ")" ;
+primary_expr    = builtin_call | env_var | hex_number | dec_number | bin_number
+                | string | identifier | "(" , expression , ")" ;
+
+(* Array literal — only valid in field initializer position *)
+array_literal   = "[" , array_content , "]" ;
+array_content   = repeat_form | list_form ;
+repeat_form     = array_elem , ";" , ( dec_number | "_" ) ;
+list_form       = array_elem , { "," , array_elem } ;
+array_elem      = env_var | hex_number | bin_number | dec_number ;
 
 (* Literals *)
-number          = decimal | hexadecimal | binary ;
-decimal         = digit , { digit } ;
-hexadecimal     = "0x" , hex_digit , { hex_digit } ;
-binary          = "0b" , ( "0" | "1" ) , { "0" | "1" } ;
+hex_number      = "0x" , hex_digit , { hex_digit } ;
+bin_number      = "0b" , ( "0" | "1" ) , { "0" | "1" } ;
+dec_number      = digit , { digit } ;
 string          = '"' , { string_char } , '"' ;
 
 (* Environment variables *)
@@ -418,17 +476,15 @@ env_var         = "${" , identifier , "}" ;
 
 (* Built-in functions *)
 builtin_call    = "@" , builtin_name , "(" , [ arg_list ] , ")" ;
-builtin_name    = "bytes" | "sizeof" | "offsetof" | "crc32" | "sha256" ;
+builtin_name    = "bytes" | "sizeof" | "offsetof" | "crc32" | "crc" | "sha256" ;
 arg_list        = argument , { "," , argument } ;
-argument        = expression | range_expr | section_ref ;
+argument        = range_expr | expression ;     (* range_expr takes priority *)
 
-(* Range expressions *)
-range_expr      = "@self" , [ "[" , [ range_start ] , ".." , [ range_end ] , "]" ] ;
-range_start     = number ;
+(* Range expressions — @self with optional slice spec *)
+range_expr      = "@self" , [ "[" , range_spec , "]" ] ;
+range_spec      = [ range_start ] , ".." , [ range_end ] ;
+range_start     = identifier | hex_number | bin_number | dec_number ;
 range_end       = identifier ;
-
-(* Section reference *)
-section_ref     = identifier ;
 
 (* Identifiers *)
 identifier      = ( letter | "_" ) , { letter | digit | "_" } ;
@@ -454,31 +510,42 @@ The following are reserved and cannot be used as identifiers:
 - Type names: `u8`, `u16`, `u32`, `u64`, `i8`, `i16`, `i32`, `i64`
 - Directives: `endian`
 - Attributes: `packed`, `align`
-- Built-in names: `bytes`, `sizeof`, `offsetof`, `crc32`, `sha256`
+- Built-in names: `bytes`, `sizeof`, `offsetof`, `crc32`, `crc`, `sha256`
 - Special: `@self`
 
+## Type Safety
+
+### Hard Errors
+
+| Scenario | Error |
+|----------|-------|
+| `[u8; N] = "string"` (without `@bytes`) | E03001 — use `@bytes("...")` instead |
+| `[u16; N] = @bytes(...)` | E03001 — `@bytes` only valid for `[u8; N]` arrays |
+| `@crc("unknown-algo", ...)` | E04003 — unknown algorithm name |
+| Reference to undefined `${VAR}` | E02001 |
+
+### Warnings
+
+| Scenario | Warning |
+|----------|---------|
+| Integer value has bits above field width (e.g., `u8 = 0x1FF`) | W03002 ValueTruncated |
+| String longer than target array | W03001 StringTruncated |
+| Shift amount ≥ 64 (result is always 0) | W04001 ShiftOverflow |
+
 ## Implementation Notes
-
-### Current Limitations
-
-1. **Struct attributes**: Only `@packed` is implemented; `@align(n)` is planned
-2. **CRC algorithms**: Only CRC32-ISO-HDLC is implemented; `@crc16()` and generic `@crc()` are planned
-3. **Hash algorithms**: Only SHA256 is implemented; generic `@hash()` is planned
-4. **Range expressions**: `@self[field..]` syntax is not yet implemented
-5. **Multiple sections**: Passing multiple sections to hash/CRC functions is not yet implemented
 
 ### Default Values
 
 | Type | Default Value |
 |------|---------------|
-| Scalar types | 0x00 |
-| Array types | All elements filled with 0x00 |
+| Scalar types | `0x00` |
+| Array types | All elements `0x00` |
 
-Example:
-```rust
-reserved: [u8; 8];           // 8 × 0x00
-padding: u32;                // 0x00000000
-```
+### Current Limitations
+
+1. **Single struct per file** — multiple structs are not yet supported
+2. **CRC algorithms** — only `crc32` and `crc16-modbus`; more planned
+3. **Multiple-section hash** — `@sha256(section_a, section_b)` not yet implemented
 
 ## Examples
 
