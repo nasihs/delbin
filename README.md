@@ -1,9 +1,9 @@
 # Delbin - Descriptive Language for Binary Objects
 
-A Domain-Specific Language (DSL) and its supporting library for describing and generating binary data structures, primarily designed for embedded firmware header generation.
-
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
 [![Rust](https://img.shields.io/badge/rust-2021-orange.svg)](https://www.rust-lang.org)
+
+A Domain-Specific Language (DSL) and its supporting library for describing and generating binary data structures, primarily designed for embedded firmware header generation.
 
 ## Features
 
