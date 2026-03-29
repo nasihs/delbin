@@ -97,6 +97,7 @@ pub struct DelbinWarning {
 pub enum WarningCode {
     W03001, // StringTruncated
     W03002, // ValueTruncated
+    W04001, // ShiftOverflow (shift amount >= operand bit-width)
 }
 
 pub type Result<T> = std::result::Result<T, DelbinError>;

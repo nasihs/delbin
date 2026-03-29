@@ -12,6 +12,7 @@ pest_derive = "2.7"
 crc = "3.2"
 sha2 = "0.10"
 thiserror = "2.0.17"
+clap = { version = "4", features = ["derive"] }
 
 [dev-dependencies]
 hex = "0.4"

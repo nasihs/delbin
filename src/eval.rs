@@ -65,11 +65,25 @@ impl Evaluator {
     pub fn eval(&mut self, file: &File) -> Result<Vec<u8>> {
         self.endian = file.endian;
 
-        // First pass: calculate struct size
-        self.struct_size = Some(self.calculate_struct_size(&file.struct_def)?);
+        // First pass: calculate raw struct size
+        let raw_size = self.calculate_struct_size(&file.struct_def)?;
+
+        // Apply alignment: if @align(n) is specified, round up to n-byte boundary
+        let aligned_size = if let Some(align) = file.struct_def.align {
+            let n = align as usize;
+            raw_size.div_ceil(n) * n
+        } else {
+            raw_size
+        };
+        self.struct_size = Some(aligned_size);
 
         // Second pass: generate data
         self.eval_struct(&file.struct_def)?;
+
+        // Pad to aligned size
+        while self.output.len() < aligned_size {
+            self.output.push(0);
+        }
 
         // Process pending fields
         self.process_pending()?;
@@ -80,6 +94,139 @@ impl Evaluator {
     /// Get warnings
     pub fn warnings(&self) -> &[DelbinWarning] {
         &self.warnings
+    }
+
+    /// Parse raw binary bytes according to the struct layout.
+    ///
+    /// Returns a map of field name → typed `Value`.
+    pub fn parse_bytes(
+        &mut self,
+        file: &File,
+        data: &[u8],
+    ) -> Result<HashMap<String, Value>> {
+        self.endian = file.endian;
+        // Populate field_offsets without clearing them at the end
+        self.compute_field_layout(&file.struct_def)?;
+
+        let mut result = HashMap::new();
+        let mut offset = 0usize;
+
+        for field in &file.struct_def.fields {
+            let size = self.field_size_for_parse(&field.ty)?;
+            let value = self.extract_field_bytes(&field.ty, data, offset)?;
+            result.insert(field.name.clone(), value);
+            offset += size;
+        }
+        Ok(result)
+    }
+
+    /// Compute field offsets, keeping them in `field_offsets` after the scan.
+    fn compute_field_layout(&mut self, struct_def: &StructDef) -> Result<()> {
+        let mut offset = 0usize;
+        for field in &struct_def.fields {
+            self.current_field = Some(field.name.clone());
+            self.field_offsets.insert(field.name.clone(), offset);
+            let size = self.calculate_field_size(&field.ty)?;
+            offset += size;
+        }
+        self.current_field = None;
+        self.current_offset = 0;
+        Ok(())
+    }
+
+    /// Get the byte size of a field type for parsing (uses eval_expr for dynamic lengths)
+    fn field_size_for_parse(&mut self, ty: &Type) -> Result<usize> {
+        match ty {
+            Type::Scalar(s) => Ok(s.size()),
+            Type::Array { elem, len } => {
+                let n = self.eval_expr(len)? as usize;
+                Ok(elem.size() * n)
+            }
+        }
+    }
+
+    /// Extract a field value from binary data at the given offset
+    fn extract_field_bytes(&mut self, ty: &Type, data: &[u8], offset: usize) -> Result<Value> {
+        match ty {
+            Type::Scalar(scalar) => {
+                let size = scalar.size();
+                if offset + size > data.len() {
+                    return Err(DelbinError::new(
+                        ErrorCode::E04002,
+                        format!(
+                            "Data too short: field at offset {} needs {} bytes, only {} remain",
+                            offset,
+                            size,
+                            data.len().saturating_sub(offset)
+                        ),
+                    ));
+                }
+                Ok(self.scalar_bytes_to_value(*scalar, &data[offset..offset + size]))
+            }
+            Type::Array { elem, len } => {
+                let n = self.eval_expr(len)? as usize;
+                let size = elem.size() * n;
+                if offset + size > data.len() {
+                    return Err(DelbinError::new(
+                        ErrorCode::E04002,
+                        format!(
+                            "Data too short: array at offset {} needs {} bytes, only {} remain",
+                            offset,
+                            size,
+                            data.len().saturating_sub(offset)
+                        ),
+                    ));
+                }
+                Ok(Value::Bytes(data[offset..offset + size].to_vec()))
+            }
+        }
+    }
+
+    /// Convert raw bytes to a typed `Value` respecting endianness
+    fn scalar_bytes_to_value(&self, scalar: ScalarType, bytes: &[u8]) -> Value {
+        match (scalar, self.endian) {
+            (ScalarType::U8, _) => Value::U8(bytes[0]),
+            (ScalarType::I8, _) => Value::I8(bytes[0] as i8),
+
+            (ScalarType::U16, Endian::Little) => {
+                Value::U16(u16::from_le_bytes([bytes[0], bytes[1]]))
+            }
+            (ScalarType::U16, Endian::Big) => {
+                Value::U16(u16::from_be_bytes([bytes[0], bytes[1]]))
+            }
+            (ScalarType::I16, Endian::Little) => {
+                Value::I16(i16::from_le_bytes([bytes[0], bytes[1]]))
+            }
+            (ScalarType::I16, Endian::Big) => {
+                Value::I16(i16::from_be_bytes([bytes[0], bytes[1]]))
+            }
+
+            (ScalarType::U32, Endian::Little) => Value::U32(u32::from_le_bytes(
+                bytes[..4].try_into().unwrap(),
+            )),
+            (ScalarType::U32, Endian::Big) => Value::U32(u32::from_be_bytes(
+                bytes[..4].try_into().unwrap(),
+            )),
+            (ScalarType::I32, Endian::Little) => Value::I32(i32::from_le_bytes(
+                bytes[..4].try_into().unwrap(),
+            )),
+            (ScalarType::I32, Endian::Big) => Value::I32(i32::from_be_bytes(
+                bytes[..4].try_into().unwrap(),
+            )),
+
+            (ScalarType::U64, Endian::Little) => Value::U64(u64::from_le_bytes(
+                bytes[..8].try_into().unwrap(),
+            )),
+            (ScalarType::U64, Endian::Big) => Value::U64(u64::from_be_bytes(
+                bytes[..8].try_into().unwrap(),
+            )),
+            (ScalarType::I64, Endian::Little) => Value::I64(i64::from_le_bytes(
+                bytes[..8].try_into().unwrap(),
+            )),
+            (ScalarType::I64, Endian::Big) => Value::I64(i64::from_be_bytes(
+                bytes[..8].try_into().unwrap(),
+            )),
+        }
     }
 
     /// Calculate struct size (pre-scan)
@@ -353,8 +500,30 @@ impl Evaluator {
                 match op {
                     BinOp::Or => Ok(l | r),
                     BinOp::And => Ok(l & r),
-                    BinOp::Shl => Ok(l << r),
-                    BinOp::Shr => Ok(l >> r),
+                    BinOp::Shl => {
+                        if r >= 64 {
+                            self.warnings.push(DelbinWarning {
+                                code: crate::error::WarningCode::W04001,
+                                message: format!("Shift left by {} bits overflows u64; result is 0", r),
+                                location: None,
+                            });
+                            Ok(0)
+                        } else {
+                            Ok(l << r)
+                        }
+                    }
+                    BinOp::Shr => {
+                        if r >= 64 {
+                            self.warnings.push(DelbinWarning {
+                                code: crate::error::WarningCode::W04001,
+                                message: format!("Shift right by {} bits overflows u64; result is 0", r),
+                                location: None,
+                            });
+                            Ok(0)
+                        } else {
+                            Ok(l >> r)
+                        }
+                    }
                     BinOp::Add => Ok(l.wrapping_add(r)),
                     BinOp::Sub => Ok(l.wrapping_sub(r)),
                 }
@@ -478,6 +647,24 @@ impl Evaluator {
             "crc32" => {
                 let data = self.collect_range_data(args)?;
                 Ok(builtin::crc32(&data) as u64)
+            }
+
+            "crc" => {
+                if args.len() < 2 {
+                    return Err(DelbinError::new(
+                        ErrorCode::E04004,
+                        "@crc() requires 2 arguments: algorithm name and data source",
+                    ));
+                }
+                let algo = match &args[0] {
+                    Expr::String(s) => s.clone(),
+                    _ => return Err(DelbinError::new(
+                        ErrorCode::E04003,
+                        "@crc() first argument must be a string literal (algorithm name)",
+                    )),
+                };
+                let data = self.collect_range_data(&args[1..])?;
+                builtin::crc_by_name(&algo, &data)
             }
 
             "sha256" => {
@@ -633,6 +820,17 @@ impl Evaluator {
                     Expr::Call { name, args } if name == "crc32" => {
                         let data = self.collect_range_data(args)?;
                         builtin::crc32(&data) as u64
+                    }
+                    Expr::Call { name, args } if name == "crc" => {
+                        let algo = match args.first() {
+                            Some(Expr::String(s)) => s.clone(),
+                            _ => return Err(DelbinError::new(
+                                ErrorCode::E04003,
+                                "@crc() first argument must be a string literal (algorithm name)",
+                            )),
+                        };
+                        let data = self.collect_range_data(&args[1..])?;
+                        builtin::crc_by_name(&algo, &data)?
                     }
                     _ => self.eval_expr(&pending.expr)?,
                 };

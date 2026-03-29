@@ -1,14 +1,32 @@
 //! Delbin built-in function implementations
 
-use crc::{Crc, CRC_32_ISO_HDLC};
+use crc::{Crc, CRC_16_MODBUS, CRC_32_ISO_HDLC};
 use sha2::{Digest, Sha256};
 
-use crate::error::{WarningCode, DelbinWarning};
+use crate::error::{DelbinError, DelbinWarning, ErrorCode, WarningCode};
 
 /// CRC32 calculation (ISO-HDLC)
 pub fn crc32(data: &[u8]) -> u32 {
     const CRC: Crc<u32> = Crc::<u32>::new(&CRC_32_ISO_HDLC);
     CRC.checksum(data)
+}
+
+/// CRC16-MODBUS calculation
+pub fn crc16_modbus(data: &[u8]) -> u16 {
+    const CRC: Crc<u16> = Crc::<u16>::new(&CRC_16_MODBUS);
+    CRC.checksum(data)
+}
+
+/// Generic CRC dispatch by algorithm name
+pub fn crc_by_name(algorithm: &str, data: &[u8]) -> crate::error::Result<u64> {
+    match algorithm {
+        "crc32" | "crc32-iso-hdlc" => Ok(crc32(data) as u64),
+        "crc16-modbus" => Ok(crc16_modbus(data) as u64),
+        other => Err(DelbinError::new(
+            ErrorCode::E04003,
+            format!("Unknown CRC algorithm: '{}'. Supported: crc32, crc16-modbus", other),
+        )),
+    }
 }
 
 /// SHA256 calculation

@@ -126,8 +126,43 @@ pub fn generate_hex(
     Ok(to_hex_string(&result.data))
 }
 
-/// Merge header into target file
+/// Validate DSL without generating output
 ///
+/// Checks syntax and semantics. Returns warnings on success, error on failure.
+pub fn validate(
+    dsl: &str,
+    env: &HashMap<String, Value>,
+) -> Result<Vec<DelbinWarning>> {
+    let file = parser::parse(dsl)?;
+    let mut evaluator = eval::Evaluator::new(env.clone(), HashMap::new());
+    evaluator.eval(&file)?;
+    Ok(evaluator.warnings().to_vec())
+}
+
+/// Parse binary data according to DSL field layout
+///
+/// Reverse of `generate()`. Extracts named field values from raw binary bytes.
+///
+/// # Parameters
+///
+/// * `dsl` - DSL description text
+/// * `env` - Environment variable mapping (needed to resolve dynamic sizes)
+/// * `data` - Raw binary bytes to parse
+///
+/// # Returns
+///
+/// Map of field name → value
+pub fn parse(
+    dsl: &str,
+    env: &HashMap<String, Value>,
+    data: &[u8],
+) -> Result<HashMap<String, Value>> {
+    let file = parser::parse(dsl)?;
+    let mut evaluator = eval::Evaluator::new(env.clone(), HashMap::new());
+    evaluator.parse_bytes(&file, data)
+}
+
+
 /// # Parameters
 ///
 /// * `dsl` - DSL description text
@@ -405,5 +440,228 @@ mod tests {
         assert_eq!(result.data.len(), 12);
         let crc_bytes = &result.data[8..12];
         assert_ne!(crc_bytes, &[0u8; 4], "CRC should not be zero");
+    }
+
+    // ── P1: env var / shift overflow / @crc unified ────────────────────
+
+    #[test]
+    fn test_undefined_env_var_is_error() {
+        let dsl = r#"
+            @endian = little;
+            struct header @packed {
+                ver: u8 = ${MISSING_VAR};
+            }
+        "#;
+        let result = generate(dsl, &HashMap::new(), &HashMap::new());
+        assert!(result.is_err(), "expected Err for undefined env var");
+        assert_eq!(result.unwrap_err().code, ErrorCode::E02001);
+    }
+
+    #[test]
+    fn test_shift_by_64_emits_warning_and_returns_zero() {
+        // 1 << 64 cannot fit in u64; should warn W04001 and produce 0
+        let dsl = r#"
+            @endian = little;
+            struct header @packed {
+                val: u64 = 1 << 64;
+            }
+        "#;
+        let result = generate(dsl, &HashMap::new(), &HashMap::new()).unwrap();
+        assert_eq!(result.data, vec![0u8; 8], "result should be 0 when shift >= 64");
+        assert!(
+            result.warnings.iter().any(|w| w.code == WarningCode::W04001),
+            "expected W04001 ShiftOverflow warning"
+        );
+    }
+
+    #[test]
+    fn test_crc_unified_equals_crc32() {
+        // @crc("crc32", @self[..]) should produce the same bytes as @crc32(@self[..])
+        let env = HashMap::new();
+        let sects = HashMap::new();
+
+        let dsl_unified = r#"
+            @endian = little;
+            struct header @packed {
+                magic: [u8; 4] = @bytes("TEST");
+                crc:   u32     = @crc("crc32", @self[magic..crc]);
+            }
+        "#;
+        let dsl_legacy = r#"
+            @endian = little;
+            struct header @packed {
+                magic: [u8; 4] = @bytes("TEST");
+                crc:   u32     = @crc32(@self[magic..crc]);
+            }
+        "#;
+
+        let unified = generate(dsl_unified, &env, &sects).unwrap();
+        let legacy  = generate(dsl_legacy,  &env, &sects).unwrap();
+        assert_eq!(unified.data, legacy.data, "@crc(\"crc32\",...) must equal @crc32(...)");
+    }
+
+    #[test]
+    fn test_crc_unified_crc16_modbus() {
+        let mut sections = HashMap::new();
+        sections.insert("fw".to_string(), vec![0x01u8, 0x02, 0x03, 0x04]);
+
+        let dsl = r#"
+            @endian = little;
+            struct header @packed {
+                crc16: u16 = @crc("crc16-modbus", fw);
+            }
+        "#;
+        let result = generate(dsl, &HashMap::new(), &sections).unwrap();
+        assert_eq!(result.data.len(), 2);
+        let crc = u16::from_le_bytes([result.data[0], result.data[1]]);
+        assert_ne!(crc, 0, "CRC16-MODBUS should not be zero for non-empty input");
+    }
+
+    #[test]
+    fn test_crc_unknown_algorithm_is_error() {
+        let mut sections = HashMap::new();
+        sections.insert("fw".to_string(), vec![0xAAu8]);
+
+        let dsl = r#"
+            @endian = little;
+            struct header @packed {
+                crc: u32 = @crc("nonexistent-algo", fw);
+            }
+        "#;
+        let result = generate(dsl, &HashMap::new(), &sections);
+        assert!(result.is_err(), "unknown CRC algorithm should return Err");
+        assert_eq!(result.unwrap_err().code, ErrorCode::E04003);
+    }
+
+    // ── P2: @align(n) padding ───────────────────────────────────────────
+
+    #[test]
+    fn test_align_4_pads_to_boundary() {
+        // u8(1) + u16(2) = 3 bytes raw → padded to 4 with @align(4)
+        let dsl = r#"
+            @endian = little;
+            struct header @align(4) {
+                tag: u8  = 0xAB;
+                val: u16 = 0x1234;
+            }
+        "#;
+        let result = generate(dsl, &HashMap::new(), &HashMap::new()).unwrap();
+        assert_eq!(result.data.len(), 4, "aligned struct should be 4 bytes");
+        assert_eq!(result.data[0], 0xAB);
+        assert_eq!(result.data[1], 0x34); // little-endian low byte
+        assert_eq!(result.data[2], 0x12); // little-endian high byte
+        assert_eq!(result.data[3], 0x00); // padding
+    }
+
+    #[test]
+    fn test_align_already_aligned_no_extra_padding() {
+        // u32(4) = 4 bytes raw → already aligned to 4, no padding
+        let dsl = r#"
+            @endian = little;
+            struct header @align(4) {
+                val: u32 = 0xDEADBEEF;
+            }
+        "#;
+        let result = generate(dsl, &HashMap::new(), &HashMap::new()).unwrap();
+        assert_eq!(result.data.len(), 4);
+    }
+
+    // ── P3: validate() API ─────────────────────────────────────────────
+
+    #[test]
+    fn test_validate_valid_dsl_returns_ok() {
+        let dsl = r#"
+            @endian = little;
+            struct header @packed {
+                version: u8 = 1;
+            }
+        "#;
+        let result = validate(dsl, &HashMap::new());
+        assert!(result.is_ok(), "valid DSL should pass validate()");
+    }
+
+    #[test]
+    fn test_validate_invalid_syntax_returns_error() {
+        let result = validate("this is not valid dsl", &HashMap::new());
+        assert!(result.is_err(), "invalid syntax should fail validate()");
+    }
+
+    #[test]
+    fn test_validate_undefined_env_var_returns_error() {
+        let dsl = r#"
+            @endian = little;
+            struct header @packed {
+                ver: u8 = ${NO_SUCH_VAR};
+            }
+        "#;
+        let result = validate(dsl, &HashMap::new());
+        assert!(result.is_err(), "undefined env var should fail validate()");
+        assert_eq!(result.unwrap_err().code, ErrorCode::E02001);
+    }
+
+    #[test]
+    fn test_validate_returns_warnings_for_truncation() {
+        let dsl = r#"
+            @endian = little;
+            struct header @packed {
+                small: u8 = 0x1FF;
+            }
+        "#;
+        let warnings = validate(dsl, &HashMap::new()).unwrap();
+        assert!(!warnings.is_empty(), "truncation should produce a warning");
+        assert!(warnings.iter().any(|w| w.code == WarningCode::W03002));
+    }
+
+    // ── P3: parse() API ────────────────────────────────────────────────
+
+    #[test]
+    fn test_parse_scalar_fields_little_endian() {
+        let dsl = "@endian = little; struct h @packed { ver: u8; flags: u16; size: u32; }";
+        let data: &[u8] = &[0x01, 0x34, 0x12, 0x78, 0x56, 0x34, 0x12];
+        let result = parse(dsl, &HashMap::new(), data).unwrap();
+        assert_eq!(result["ver"].as_u64().unwrap(), 0x01);
+        assert_eq!(result["flags"].as_u64().unwrap(), 0x1234);
+        assert_eq!(result["size"].as_u64().unwrap(), 0x12345678);
+    }
+
+    #[test]
+    fn test_parse_scalar_fields_big_endian() {
+        let dsl = "@endian = big; struct h @packed { val: u32; }";
+        let data: &[u8] = &[0x12, 0x34, 0x56, 0x78];
+        let result = parse(dsl, &HashMap::new(), data).unwrap();
+        assert_eq!(result["val"].as_u64().unwrap(), 0x12345678);
+    }
+
+    #[test]
+    fn test_parse_array_field_returns_bytes() {
+        let dsl = "@endian = little; struct h @packed { magic: [u8; 4]; }";
+        let data: &[u8] = b"TEST";
+        let result = parse(dsl, &HashMap::new(), data).unwrap();
+        assert_eq!(result["magic"].as_bytes().unwrap(), b"TEST");
+    }
+
+    #[test]
+    fn test_parse_data_too_short_is_error() {
+        let dsl = "@endian = little; struct h @packed { size: u32; }";
+        let data: &[u8] = &[0x01, 0x02]; // only 2 bytes, needs 4
+        let result = parse(dsl, &HashMap::new(), data);
+        assert!(result.is_err(), "short data should return Err");
+    }
+
+    #[test]
+    fn test_parse_roundtrip() {
+        let dsl = r#"
+            @endian = little;
+            struct h @packed {
+                version: u8  = 3;
+                flags:   u16 = 0x1234;
+                size:    u32 = 0xDEADBEEF;
+            }
+        "#;
+        let generated = generate(dsl, &HashMap::new(), &HashMap::new()).unwrap();
+        let parsed = parse(dsl, &HashMap::new(), &generated.data).unwrap();
+        assert_eq!(parsed["version"].as_u64().unwrap(), 3);
+        assert_eq!(parsed["flags"].as_u64().unwrap(), 0x1234);
+        assert_eq!(parsed["size"].as_u64().unwrap(), 0xDEAD_BEEF);
     }
 }
