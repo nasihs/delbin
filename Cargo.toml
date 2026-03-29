@@ -5,6 +5,7 @@ description = "Descriptive Language for Binary Object"
 edition = "2021"
 authors = ["nasihs"]
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/nasihs/delbin"
 
 [dependencies]
 pest = "2.7"
