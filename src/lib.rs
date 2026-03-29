@@ -323,4 +323,87 @@ mod tests {
         println!("Generated header ({} bytes):", result.data.len());
         println!("{}", hex_dump(&result.data, 16));
     }
+
+    // ── Type-checking tests ────────────────────────────────────────────
+
+    #[test]
+    fn test_string_direct_assign_to_array_is_error() {
+        let dsl = r#"
+            @endian = little;
+            struct header @packed {
+                magic: [u8; 4] = "bad";
+            }
+        "#;
+        let result = generate(dsl, &HashMap::new(), &HashMap::new());
+        assert!(result.is_err(), "expected error for string literal directly assigned to array");
+        let msg = result.unwrap_err().message;
+        assert!(msg.contains("@bytes"), "error should mention @bytes, got: {}", msg);
+    }
+
+    #[test]
+    fn test_bytes_to_non_u8_array_is_error() {
+        let dsl = r#"
+            @endian = little;
+            struct header @packed {
+                data: [u16; 2] = @bytes("AB");
+            }
+        "#;
+        let result = generate(dsl, &HashMap::new(), &HashMap::new());
+        assert!(result.is_err(), "expected error for @bytes() on non-u8 array");
+        let msg = result.unwrap_err().message;
+        assert!(msg.contains("u8"), "error should mention u8, got: {}", msg);
+    }
+
+    #[test]
+    fn test_integer_truncation_emits_warning() {
+        let dsl = r#"
+            @endian = little;
+            struct header @packed {
+                small: u8 = 0x1FF;
+            }
+        "#;
+        let result = generate(dsl, &HashMap::new(), &HashMap::new()).unwrap();
+        assert_eq!(result.data, vec![0xFF]); // truncated
+        assert!(!result.warnings.is_empty(), "expected truncation warning");
+    }
+
+    // ── Range expression tests (P1) ────────────────────────────────────
+
+    #[test]
+    fn test_range_field_to_end() {
+        // @crc32(@self[magic..]) — from the 'magic' field to end of struct
+        let dsl = r#"
+            @endian = little;
+            struct header @packed {
+                magic:  [u8; 4] = @bytes("TEST");
+                crc:    u32     = @crc32(@self[magic..]);
+            }
+        "#;
+        let env = HashMap::new();
+        let sections = HashMap::new();
+        let result = generate(dsl, &env, &sections).unwrap();
+        assert_eq!(result.data.len(), 8);
+        // Verify CRC is non-zero and matches manual calculation
+        let crc_bytes = &result.data[4..8];
+        assert_ne!(crc_bytes, &[0u8; 4], "CRC should not be zero");
+    }
+
+    #[test]
+    fn test_range_field_to_field() {
+        // @crc32(@self[magic..body_crc]) — two-field range
+        let dsl = r#"
+            @endian = little;
+            struct header @packed {
+                magic:    [u8; 4] = @bytes("TEST");
+                reserved: u32     = 0;
+                body_crc: u32     = @crc32(@self[magic..body_crc]);
+            }
+        "#;
+        let env = HashMap::new();
+        let sections = HashMap::new();
+        let result = generate(dsl, &env, &sections).unwrap();
+        assert_eq!(result.data.len(), 12);
+        let crc_bytes = &result.data[8..12];
+        assert_ne!(crc_bytes, &[0u8; 4], "CRC should not be zero");
+    }
 }

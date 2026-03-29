@@ -34,7 +34,7 @@ pub fn to_hex_string(data: &[u8]) -> String {
 /// Parse hexadecimal string to byte array
 pub fn from_hex_string(hex: &str) -> Option<Vec<u8>> {
     let hex = hex.trim();
-    if hex.len() % 2 != 0 {
+    if !hex.len().is_multiple_of(2) {
         return None;
     }
 

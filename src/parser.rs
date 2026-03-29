@@ -21,22 +21,19 @@ pub fn parse(input: &str) -> Result<File> {
     let mut struct_def = None;
 
     for pair in pairs {
-        match pair.as_rule() {
-            Rule::file => {
-                for inner in pair.into_inner() {
-                    match inner.as_rule() {
-                        Rule::directive => {
-                            endian = parse_directive(inner)?;
-                        }
-                        Rule::struct_def => {
-                            struct_def = Some(parse_struct_def(inner)?);
-                        }
-                        Rule::EOI => {}
-                        _ => {}
+        if pair.as_rule() == Rule::file {
+            for inner in pair.into_inner() {
+                match inner.as_rule() {
+                    Rule::directive => {
+                        endian = parse_directive(inner)?;
                     }
+                    Rule::struct_def => {
+                        struct_def = Some(parse_struct_def(inner)?);
+                    }
+                    Rule::EOI => {}
+                    _ => {}
                 }
             }
-            _ => {}
         }
     }
 
@@ -84,7 +81,7 @@ fn parse_struct_def(pair: pest::iterators::Pair<Rule>) -> Result<StructDef> {
                     for attr_inner in inner.into_inner() {
                         if attr_inner.as_rule() == Rule::align_attr {
                             for num in attr_inner.into_inner() {
-                                if num.as_rule() == Rule::number {
+                                if num.as_rule() == Rule::dec_number {
                                     align = Some(num.as_str().parse().unwrap_or(1));
                                 }
                             }
@@ -122,13 +119,8 @@ fn parse_field_def(pair: pest::iterators::Pair<Rule>) -> Result<FieldDef> {
             Rule::type_spec => {
                 ty = Some(parse_type_spec(inner)?);
             }
-            Rule::init_expr => {
-                // Parse expr inside init_expr
-                for expr_inner in inner.into_inner() {
-                    if expr_inner.as_rule() == Rule::expr {
-                        init = Some(parse_expr(expr_inner)?);
-                    }
-                }
+            Rule::array_literal => {
+                init = Some(parse_array_literal(inner)?);
             }
             Rule::expr => {
                 init = Some(parse_expr(inner)?);
@@ -335,7 +327,6 @@ fn parse_unary_expr(pair: pest::iterators::Pair<Rule>) -> Result<Expr> {
             Rule::unary_op => {
                 unary_op = Some(match inner.as_str() {
                     "~" => UnaryOp::Not,
-                    "-" => UnaryOp::Neg,
                     _ => return Err(DelbinError::new(ErrorCode::E01003, "Invalid unary operator")),
                 });
             }
@@ -361,9 +352,6 @@ fn parse_unary_expr(pair: pest::iterators::Pair<Rule>) -> Result<Expr> {
 fn parse_primary_expr(pair: pest::iterators::Pair<Rule>) -> Result<Expr> {
     for inner in pair.into_inner() {
         match inner.as_rule() {
-            Rule::array_literal => {
-                return parse_array_literal(inner);
-            }
             Rule::builtin_call => {
                 return parse_builtin_call(inner);
             }
@@ -392,10 +380,13 @@ fn parse_primary_expr(pair: pest::iterators::Pair<Rule>) -> Result<Expr> {
             }
             Rule::string => {
                 let s = inner.as_str();
-                // Remove quotes and handle escapes
                 let content = &s[1..s.len() - 1];
                 let unescaped = unescape_string(content)?;
                 return Ok(Expr::String(unescaped));
+            }
+            Rule::ident => {
+                // Bare identifier: treated as a section reference or field name at eval time
+                return Ok(Expr::SectionRef(inner.as_str().to_string()));
             }
             Rule::expr => {
                 return parse_expr(inner);
@@ -443,13 +434,7 @@ fn parse_arg(pair: pest::iterators::Pair<Rule>) -> Result<Expr> {
             Rule::range_expr => {
                 return parse_range_expr(inner);
             }
-            Rule::section_ref => {
-                // Section reference (e.g. image)
-                let name = inner.as_str().to_string();
-                return Ok(Expr::SectionRef(name));
-            }
             Rule::expr => {
-                // General expression (string, number, etc.)
                 return parse_expr(inner);
             }
             _ => {}
@@ -464,26 +449,44 @@ fn parse_range_expr(pair: pest::iterators::Pair<Rule>) -> Result<Expr> {
     let mut end = None;
 
     for inner in pair.into_inner() {
-        match inner.as_rule() {
-            Rule::range_spec => {
-                has_range_spec = true;
-                for spec_inner in inner.into_inner() {
-                    match spec_inner.as_rule() {
-                        Rule::range_start => {
-                            for expr in spec_inner.into_inner() {
-                                start = Some(Box::new(parse_expr(expr)?));
-                            }
+        if inner.as_rule() == Rule::range_spec {
+            has_range_spec = true;
+            for spec_inner in inner.into_inner() {
+                match spec_inner.as_rule() {
+                    Rule::range_start => {
+                        for child in spec_inner.into_inner() {
+                            let expr = match child.as_rule() {
+                                Rule::ident => Expr::SectionRef(child.as_str().to_string()),
+                                Rule::hex_number => {
+                                    let s = child.as_str();
+                                    Expr::Number(u64::from_str_radix(&s[2..], 16).map_err(|_| {
+                                        DelbinError::new(ErrorCode::E01004, format!("Invalid hex: {}", s))
+                                    })?)
+                                }
+                                Rule::bin_number => {
+                                    let s = child.as_str();
+                                    Expr::Number(u64::from_str_radix(&s[2..], 2).map_err(|_| {
+                                        DelbinError::new(ErrorCode::E01004, format!("Invalid binary: {}", s))
+                                    })?)
+                                }
+                                Rule::dec_number => {
+                                    Expr::Number(child.as_str().parse::<u64>().map_err(|_| {
+                                        DelbinError::new(ErrorCode::E01004, format!("Invalid number: {}", child.as_str()))
+                                    })?)
+                                }
+                                _ => return Err(DelbinError::new(ErrorCode::E01003, "Invalid range start")),
+                            };
+                            start = Some(Box::new(expr));
                         }
-                        Rule::range_end => {
-                            for ident in spec_inner.into_inner() {
-                                end = Some(ident.as_str().to_string());
-                            }
-                        }
-                        _ => {}
                     }
+                    Rule::range_end => {
+                        for ident in spec_inner.into_inner() {
+                            end = Some(ident.as_str().to_string());
+                        }
+                    }
+                    _ => {}
                 }
             }
-            _ => {}
         }
     }
 
@@ -541,7 +544,7 @@ fn parse_repeat_form(pair: pest::iterators::Pair<Rule>) -> Result<Expr> {
             Rule::array_elem => {
                 value = Some(parse_array_elem(inner)?);
             }
-            Rule::number => {
+            Rule::dec_number => {
                 let n = inner.as_str().parse::<u64>().map_err(|_| {
                     DelbinError::new(ErrorCode::E01004, format!("Invalid number: {}", inner.as_str()))
                 })?;

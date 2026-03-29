@@ -169,20 +169,12 @@ impl Evaluator {
         }
     }
 
-    /// Check if expression self-references current field
-    fn is_self_referencing(&self, expr: &Expr, field_name: &str) -> bool {
+    /// Check if expression must be deferred to the pending phase.
+    /// Deferred when a range-based builtin (@crc32, @sha256) references @self data.
+    fn is_self_referencing(&self, expr: &Expr, _field_name: &str) -> bool {
         match expr {
-            Expr::Call { name, args } => {
-                if name == "crc32" || name == "sha256" {
-                    for arg in args {
-                        if let Expr::Range { end: Some(end), .. } = arg {
-                            if end == field_name {
-                                return true;
-                            }
-                        }
-                    }
-                }
-                false
+            Expr::Call { name, args } if is_range_based_builtin(name) => {
+                args.iter().any(arg_refers_to_self)
             }
             _ => false,
         }
@@ -193,18 +185,33 @@ impl Evaluator {
         match ty {
             Type::Scalar(scalar) => {
                 let value = self.eval_expr(init)?;
-                Ok(self.scalar_to_bytes(*scalar, value))
+                Ok(self.write_scalar_value(*scalar, value))
             }
             Type::Array { elem, len } => {
                 let len_val = self.eval_expr(len)? as usize;
 
                 match init {
+                    Expr::String(_) => {
+                        // String literal directly assigned to array — must use @bytes()
+                        Err(DelbinError::new(
+                            ErrorCode::E03001,
+                            "Cannot assign a string literal directly to an array field; use @bytes(\"...\") instead",
+                        ))
+                    }
                     Expr::ArrayLiteral(array_lit) => {
-                        // Handle array literal initialization
                         self.eval_array_literal(array_lit, *elem, len_val)
                     }
                     Expr::Call { name, args } if name == "bytes" => {
-                        // @bytes("string")
+                        // @bytes("string") is only valid for [u8; N] arrays
+                        if *elem != crate::types::ScalarType::U8 {
+                            return Err(DelbinError::new(
+                                ErrorCode::E03001,
+                                format!(
+                                    "@bytes() returns u8 data but field element type is {}",
+                                    format!("{:?}", elem).to_lowercase()
+                                ),
+                            ));
+                        }
                         if args.len() != 1 {
                             return Err(DelbinError::new(
                                 ErrorCode::E04004,
@@ -219,13 +226,12 @@ impl Evaluator {
                         Ok(bytes)
                     }
                     Expr::Call { name, args } if name == "sha256" => {
-                        // @sha256(section)
                         let data = self.collect_range_data(args)?;
                         let hash = builtin::sha256(&data);
                         Ok(hash.to_vec())
                     }
                     _ => {
-                        // Default zero fill
+                        // Default zero fill for unrecognised init forms
                         Ok(vec![0u8; len_val * elem.size()])
                     }
                 }
@@ -279,7 +285,7 @@ impl Evaluator {
                 let mut result = Vec::with_capacity(total_bytes);
                 // Fill with specified value
                 for _ in 0..actual_count {
-                    result.extend_from_slice(&self.scalar_to_bytes(elem_type, fill_value));
+                    result.extend_from_slice(&self.write_scalar_value(elem_type, fill_value));
                 }
                 // Fill remaining with zeros
                 while result.len() < total_bytes {
@@ -306,7 +312,7 @@ impl Evaluator {
                         break;
                     }
                     let value = self.eval_expr(elem_expr)?;
-                    result.extend_from_slice(&self.scalar_to_bytes(elem_type, value));
+                    result.extend_from_slice(&self.write_scalar_value(elem_type, value));
                 }
 
                 // Fill remaining with zeros
@@ -358,7 +364,6 @@ impl Evaluator {
                 let v = self.eval_expr(operand)?;
                 match op {
                     UnaryOp::Not => Ok(!v),
-                    UnaryOp::Neg => Ok((!v).wrapping_add(1)), // Two's complement
                 }
             }
 
@@ -584,13 +589,24 @@ impl Evaluator {
         Ok(data)
     }
 
-    /// Constant expression evaluation (does not modify state)
+    /// Constant expression evaluation: resolves numbers and field names to offsets
     fn eval_expr_const(&self, expr: &Expr) -> Result<u64> {
         match expr {
             Expr::Number(n) => Ok(*n),
+            Expr::SectionRef(name) => {
+                self.field_offsets
+                    .get(name)
+                    .map(|&o| o as u64)
+                    .ok_or_else(|| {
+                        DelbinError::new(
+                            ErrorCode::E02002,
+                            format!("Undefined field '{}' in range expression", name),
+                        )
+                    })
+            }
             _ => Err(DelbinError::new(
                 ErrorCode::E04003,
-                "Expected constant expression",
+                "Expected a numeric literal or field name in range expression",
             )),
         }
     }
@@ -620,7 +636,7 @@ impl Evaluator {
                     }
                     _ => self.eval_expr(&pending.expr)?,
                 };
-                Ok(self.scalar_to_bytes(*scalar, value))
+                Ok(self.write_scalar_value(*scalar, value))
             }
             Type::Array { elem, len } => {
                 let len_val = self.eval_expr(len)? as usize;
@@ -634,6 +650,24 @@ impl Evaluator {
                 }
             }
         }
+    }
+
+    /// Convert scalar to bytes (with truncation warning)
+    fn write_scalar_value(&mut self, scalar: ScalarType, value: u64) -> Vec<u8> {
+        let mask = scalar.bit_mask();
+        if value & !mask != 0 {
+            self.warnings.push(DelbinWarning {
+                code: crate::error::WarningCode::W03002,
+                message: format!(
+                    "Value 0x{:X} truncated to fit {}-bit field (masked to 0x{:X})",
+                    value,
+                    scalar.size() * 8,
+                    value & mask
+                ),
+                location: None,
+            });
+        }
+        self.scalar_to_bytes(scalar, value)
     }
 
     /// Convert scalar to bytes
@@ -662,6 +696,21 @@ impl Evaluator {
                 value.to_be_bytes().to_vec()
             }
         }
+    }
+}
+
+/// Returns true if the builtin function operates on data ranges (@self / sections)
+/// and therefore may need two-phase (deferred) evaluation.
+fn is_range_based_builtin(name: &str) -> bool {
+    matches!(name, "crc32" | "sha256" | "crc")
+}
+
+/// Returns true if an argument expression references @self data.
+fn arg_refers_to_self(arg: &Expr) -> bool {
+    match arg {
+        Expr::SelfRef => true,
+        Expr::Range { base, .. } => matches!(base.as_ref(), Expr::SelfRef),
+        _ => false,
     }
 }
 

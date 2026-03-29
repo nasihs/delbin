@@ -122,6 +122,5 @@ pub enum BinOp {
 /// Unary operator
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnaryOp {
-    Not,        // ~
-    Neg,        // -
+    Not, // ~
 }

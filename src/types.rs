@@ -32,9 +32,19 @@ impl ScalarType {
         }
     }
 
+    /// Return bitmask for the type's bit width (used for truncation detection)
+    pub fn bit_mask(&self) -> u64 {
+        match self {
+            ScalarType::U8 | ScalarType::I8 => 0xFF,
+            ScalarType::U16 | ScalarType::I16 => 0xFFFF,
+            ScalarType::U32 | ScalarType::I32 => 0xFFFF_FFFF,
+            ScalarType::U64 | ScalarType::I64 => u64::MAX,
+        }
+    }
+
     /// Parse from string
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s {
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Option<Self> {match s {
             "u8" => Some(ScalarType::U8),
             "u16" => Some(ScalarType::U16),
             "u32" => Some(ScalarType::U32),

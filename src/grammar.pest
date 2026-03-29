@@ -23,12 +23,12 @@ directive_value = { "little" | "big" }
 // ============================================================
 struct_def  = { "struct" ~ ident ~ struct_attr* ~ "{" ~ field_def* ~ "}" }
 struct_attr = { "@" ~ ( "packed" | align_attr ) }
-align_attr  = { "align" ~ "(" ~ number ~ ")" }
+align_attr  = { "align" ~ "(" ~ dec_number ~ ")" }
 
 // ============================================================
 // Field definition
 // ============================================================
-field_def = { ident ~ ":" ~ type_spec ~ ( "=" ~ init_expr )? ~ ";" }
+field_def = { ident ~ ":" ~ type_spec ~ ( "=" ~ (array_literal | expr) )? ~ ";" }
 
 // ============================================================
 // Types
@@ -36,11 +36,6 @@ field_def = { ident ~ ":" ~ type_spec ~ ( "=" ~ init_expr )? ~ ";" }
 type_spec    = { array_type | scalar_type }
 scalar_type  = @{ ( "u" | "i" ) ~ ( "8" | "16" | "32" | "64" ) }
 array_type   = { "[" ~ scalar_type ~ ";" ~ expr ~ "]" }
-
-// ============================================================
-// Initialization expression (field assignment)
-// ============================================================
-init_expr = { expr }
 
 // ============================================================
 // Expressions
@@ -57,13 +52,13 @@ add_op       = { "+" | "-" }
 unary_op     = { "~" }
 
 primary_expr = {
-    array_literal
-  | builtin_call
+    builtin_call
   | env_var
   | hex_number
   | bin_number
   | dec_number
   | string
+  | ident
   | "(" ~ expr ~ ")"
 }
 
@@ -74,11 +69,9 @@ builtin_call = { "@" ~ builtin_name ~ "(" ~ arg_list? ~ ")" }
 builtin_name = @{ "bytes" | "sizeof" | "offsetof" | "crc32" | "sha256" }
 arg_list     = { arg ~ ( "," ~ arg )* }
 
-// arg rule - ordered by priority
-arg = { 
-    range_expr      // @self or @self[..xxx] takes priority
-  | section_ref     // Simple identifier (e.g. image)
-  | expr            // General expression (string, number, environment variable, etc.)
+arg = {
+    range_expr    // @self or @self[..xxx] takes priority
+  | expr          // General expression (string, number, identifier, etc.)
 }
 
 // ============================================================
@@ -86,20 +79,15 @@ arg = {
 // ============================================================
 range_expr   = { "@self" ~ ( "[" ~ range_spec ~ "]" )? }
 range_spec   = { range_start? ~ ".." ~ range_end? }
-range_start  = { number }
+range_start  = { ident | hex_number | bin_number | dec_number }
 range_end    = { ident }
-
-// ============================================================
-// Section reference (simple identifier)
-// ============================================================
-section_ref  = @{ ident }
 
 // ============================================================
 // Array literal
 // ============================================================
 array_literal = { "[" ~ array_content ~ "]" }
 array_content = { repeat_form | list_form }
-repeat_form   = { array_elem ~ ";" ~ (number | infer_marker) }
+repeat_form   = { array_elem ~ ";" ~ (dec_number | infer_marker) }
 list_form     = { array_elem ~ ("," ~ array_elem)* }
 array_elem    = { env_var | hex_number | bin_number | dec_number }
 infer_marker  = { "_" }
@@ -123,4 +111,3 @@ env_var = { "${" ~ ident ~ "}" }
 // Identifiers
 // ============================================================
 ident  = @{ ( ASCII_ALPHA | "_" ) ~ ( ASCII_ALPHANUMERIC | "_" )* }
-number = @{ ASCII_DIGIT+ }
