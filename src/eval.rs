@@ -804,9 +804,20 @@ impl Evaluator {
             let bytes = self.eval_pending_field(&pending)?;
 
             // Backfill data
-            if pending.offset + bytes.len() <= self.output.len() {
-                self.output[pending.offset..pending.offset + bytes.len()]
-                    .copy_from_slice(&bytes);
+            let end = pending.offset + bytes.len();
+            if end <= self.output.len() {
+                self.output[pending.offset..end].copy_from_slice(&bytes);
+            } else {
+                return Err(DelbinError::new(
+                    ErrorCode::E04002,
+                    format!(
+                        "Internal: pending field backfill out of bounds \
+                         (offset={}, len={}, output_len={})",
+                        pending.offset,
+                        bytes.len(),
+                        self.output.len()
+                    ),
+                ));
             }
         }
         Ok(())
